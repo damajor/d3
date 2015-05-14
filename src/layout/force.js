@@ -1,3 +1,12 @@
+import "../behavior/drag";
+import "../core/identity";
+import "../core/rebind";
+import "../event/event";
+import "../event/dispatch";
+import "../event/timer";
+import "../geom/quadtree";
+import "layout";
+
 // A rudimentary force layout using Gauss-Seidel.
 d3.layout.force = function() {
   var force = {},
@@ -9,9 +18,9 @@ d3.layout.force = function() {
       linkDistance = d3_layout_forceLinkDistance,
       linkStrength = d3_layout_forceLinkStrength,
       charge = -30,
+      chargeDistance2 = d3_layout_forceChargeDistance2,
       gravity = .1,
-      theta = .8,
-      interval,
+      theta2 = .64,
       nodes = [],
       links = [],
       distances,
@@ -19,22 +28,25 @@ d3.layout.force = function() {
       charges;
 
   function repulse(node) {
-    return function(quad, x1, y1, x2, y2) {
+    return function(quad, x1, _, x2) {
       if (quad.point !== node) {
         var dx = quad.cx - node.x,
             dy = quad.cy - node.y,
-            dn = 1 / Math.sqrt(dx * dx + dy * dy);
+            dw = x2 - x1,
+            dn = dx * dx + dy * dy;
 
         /* Barnes-Hut criterion. */
-        if ((x2 - x1) * dn < theta) {
-          var k = quad.charge * dn * dn;
-          node.px -= dx * k;
-          node.py -= dy * k;
+        if (dw * dw / theta2 < dn) {
+          if (dn < chargeDistance2) {
+            var k = quad.charge / dn;
+            node.px -= dx * k;
+            node.py -= dy * k;
+          }
           return true;
         }
 
-        if (quad.point && isFinite(dn)) {
-          var k = quad.pointCharge * dn * dn;
+        if (quad.point && dn && dn < chargeDistance2) {
+          var k = quad.pointCharge / dn;
           node.px -= dx * k;
           node.py -= dy * k;
         }
@@ -136,7 +148,7 @@ d3.layout.force = function() {
 
   force.linkDistance = function(x) {
     if (!arguments.length) return linkDistance;
-    linkDistance = d3.functor(x);
+    linkDistance = typeof x === "function" ? x : +x;
     return force;
   };
 
@@ -145,13 +157,13 @@ d3.layout.force = function() {
 
   force.linkStrength = function(x) {
     if (!arguments.length) return linkStrength;
-    linkStrength = d3.functor(x);
+    linkStrength = typeof x === "function" ? x : +x;
     return force;
   };
 
   force.friction = function(x) {
     if (!arguments.length) return friction;
-    friction = x;
+    friction = +x;
     return force;
   };
 
@@ -161,21 +173,28 @@ d3.layout.force = function() {
     return force;
   };
 
+  force.chargeDistance = function(x) {
+    if (!arguments.length) return Math.sqrt(chargeDistance2);
+    chargeDistance2 = x * x;
+    return force;
+  };
+
   force.gravity = function(x) {
     if (!arguments.length) return gravity;
-    gravity = x;
+    gravity = +x;
     return force;
   };
 
   force.theta = function(x) {
-    if (!arguments.length) return theta;
-    theta = x;
+    if (!arguments.length) return Math.sqrt(theta2);
+    theta2 = x * x;
     return force;
   };
 
   force.alpha = function(x) {
     if (!arguments.length) return alpha;
 
+    x = +x;
     if (alpha) { // if we're already running
       if (x > 0) alpha = x; // we might keep it hot
       else alpha = 0; // or, next tick will dispatch "end"
@@ -189,7 +208,6 @@ d3.layout.force = function() {
 
   force.start = function() {
     var i,
-        j,
         n = nodes.length,
         m = links.length,
         w = size[0],
@@ -202,14 +220,10 @@ d3.layout.force = function() {
       o.weight = 0;
     }
 
-    distances = [];
-    strengths = [];
     for (i = 0; i < m; ++i) {
       o = links[i];
       if (typeof o.source == "number") o.source = nodes[o.source];
       if (typeof o.target == "number") o.target = nodes[o.target];
-      distances[i] = linkDistance.call(this, o, i);
-      strengths[i] = linkStrength.call(this, o, i);
       ++o.source.weight;
       ++o.target.weight;
     }
@@ -222,31 +236,24 @@ d3.layout.force = function() {
       if (isNaN(o.py)) o.py = o.y;
     }
 
+    distances = [];
+    if (typeof linkDistance === "function") for (i = 0; i < m; ++i) distances[i] = +linkDistance.call(this, links[i], i);
+    else for (i = 0; i < m; ++i) distances[i] = linkDistance;
+
+    strengths = [];
+    if (typeof linkStrength === "function") for (i = 0; i < m; ++i) strengths[i] = +linkStrength.call(this, links[i], i);
+    else for (i = 0; i < m; ++i) strengths[i] = linkStrength;
+
     charges = [];
-    if (typeof charge === "function") {
-      for (i = 0; i < n; ++i) {
-        charges[i] = +charge.call(this, nodes[i], i);
-      }
-    } else {
-      for (i = 0; i < n; ++i) {
-        charges[i] = charge;
-      }
-    }
+    if (typeof charge === "function") for (i = 0; i < n; ++i) charges[i] = +charge.call(this, nodes[i], i);
+    else for (i = 0; i < n; ++i) charges[i] = charge;
 
-    // initialize node position based on first neighbor
+    // inherit node position from first neighbor with defined position
+    // or if no such neighbors, initialize node position randomly
+    // initialize neighbors lazily to avoid overhead when not needed
     function position(dimension, size) {
-      var neighbors = neighbor(i),
-          j = -1,
-          m = neighbors.length,
-          x;
-      while (++j < m) if (!isNaN(x = neighbors[j][dimension])) return x;
-      return Math.random() * size;
-    }
-
-    // initialize neighbors lazily
-    function neighbor() {
       if (!neighbors) {
-        neighbors = [];
+        neighbors = new Array(n);
         for (j = 0; j < n; ++j) {
           neighbors[j] = [];
         }
@@ -256,7 +263,12 @@ d3.layout.force = function() {
           neighbors[o.target.index].push(o.source);
         }
       }
-      return neighbors[i];
+      var candidates = neighbors[i],
+          j = -1,
+          l = candidates.length,
+          x;
+      while (++j < l) if (!isNaN(x = candidates[j][dimension])) return x;
+      return Math.random() * size;
     }
 
     return force.resume();
@@ -273,44 +285,47 @@ d3.layout.force = function() {
   // use `node.call(force.drag)` to make nodes draggable
   force.drag = function() {
     if (!drag) drag = d3.behavior.drag()
-        .origin(Object)
-        .on("dragstart", dragstart)
-        .on("drag", d3_layout_forceDrag)
-        .on("dragend", d3_layout_forceDragEnd);
+        .origin(d3_identity)
+        .on("dragstart.force", d3_layout_forceDragstart)
+        .on("drag.force", dragmove)
+        .on("dragend.force", d3_layout_forceDragend);
 
-    this.on("mouseover.force", d3_layout_forceDragOver)
-        .on("mouseout.force", d3_layout_forceDragOut)
+    if (!arguments.length) return drag;
+
+    this.on("mouseover.force", d3_layout_forceMouseover)
+        .on("mouseout.force", d3_layout_forceMouseout)
         .call(drag);
   };
 
-  function dragstart(d) {
-    d3_layout_forceDragOver(d3_layout_forceDragNode = d);
-    d3_layout_forceDragForce = force;
+  function dragmove(d) {
+    d.px = d3.event.x, d.py = d3.event.y;
+    force.resume(); // restart annealing
   }
 
   return d3.rebind(force, event, "on");
 };
 
-var d3_layout_forceDragForce,
-    d3_layout_forceDragNode;
+// The fixed property has three bits:
+// Bit 1 can be set externally (e.g., d.fixed = true) and show persist.
+// Bit 2 stores the dragging state, from mousedown to mouseup.
+// Bit 3 stores the hover state, from mouseover to mouseout.
+// Dragend is a special case: it also clears the hover state.
 
-function d3_layout_forceDragOver(d) {
-  d.fixed |= 2;
+function d3_layout_forceDragstart(d) {
+  d.fixed |= 2; // set bit 2
 }
 
-function d3_layout_forceDragOut(d) {
-  if (d !== d3_layout_forceDragNode) d.fixed &= 1;
+function d3_layout_forceDragend(d) {
+  d.fixed &= ~6; // unset bits 2 and 3
 }
 
-function d3_layout_forceDragEnd() {
-  d3_layout_forceDragNode.fixed &= 1;
-  d3_layout_forceDragForce = d3_layout_forceDragNode = null;
+function d3_layout_forceMouseover(d) {
+  d.fixed |= 4; // set bit 3
+  d.px = d.x, d.py = d.y; // set velocity to zero
 }
 
-function d3_layout_forceDrag() {
-  d3_layout_forceDragNode.px = d3.event.x;
-  d3_layout_forceDragNode.py = d3.event.y;
-  d3_layout_forceDragForce.resume(); // restart annealing
+function d3_layout_forceMouseout(d) {
+  d.fixed &= ~4; // unset bit 3
 }
 
 function d3_layout_forceAccumulate(quad, alpha, charges) {
@@ -346,10 +361,6 @@ function d3_layout_forceAccumulate(quad, alpha, charges) {
   quad.cy = cy / quad.charge;
 }
 
-function d3_layout_forceLinkDistance(link) {
-  return 20;
-}
-
-function d3_layout_forceLinkStrength(link) {
-  return 1;
-}
+var d3_layout_forceLinkDistance = 20,
+    d3_layout_forceLinkStrength = 1,
+    d3_layout_forceChargeDistance2 = Infinity;

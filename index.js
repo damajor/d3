@@ -1,21 +1,9 @@
-var self = this,
-    globals = ["document", "window", "navigator", "CSSStyleDeclaration", "d3"],
-    globalValues = {};
+var globals = {};
 
-globals.forEach(function(global) {
-  if (global in self) globalValues[global] = self[global];
-});
+// Stash old global.
+if ("d3" in global) globals.d3 = global.d3;
 
-document = require("jsdom").jsdom("<html><head></head><body></body></html>");
-window = document.createWindow();
-navigator = window.navigator;
-CSSStyleDeclaration = window.CSSStyleDeclaration;
+module.exports = require("./d3");
 
-require("./d3.v2");
-
-module.exports = d3;
-
-globals.forEach(function(global) {
-  if (global in globalValues) self[global] = globalValues[global];
-  else delete self[global];
-});
+// Restore old global.
+if ("d3" in globals) global.d3 = globals.d3; else delete global.d3;

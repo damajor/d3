@@ -1,28 +1,53 @@
+import "layout";
+import "hierarchy";
+
 d3.layout.pack = function() {
   var hierarchy = d3.layout.hierarchy().sort(d3_layout_packSort),
-      size = [1, 1];
+      padding = 0,
+      size = [1, 1],
+      radius;
 
   function pack(d, i) {
     var nodes = hierarchy.call(this, d, i),
-        root = nodes[0];
+        root = nodes[0],
+        w = size[0],
+        h = size[1],
+        r = radius == null ? Math.sqrt : typeof radius === "function" ? radius : function() { return radius; };
 
     // Recursively compute the layout.
-    root.x = 0;
-    root.y = 0;
-    d3_layout_packTree(root);
+    root.x = root.y = 0;
+    d3_layout_hierarchyVisitAfter(root, function(d) { d.r = +r(d.value); });
+    d3_layout_hierarchyVisitAfter(root, d3_layout_packSiblings);
 
-    // Scale the layout to fit the requested size.
-    var w = size[0],
-        h = size[1],
-        k = 1 / Math.max(2 * root.r / w, 2 * root.r / h);
-    d3_layout_packTransform(root, w / 2, h / 2, k);
+    // When padding, recompute the layout using scaled padding.
+    if (padding) {
+      var dr = padding * (radius ? 1 : Math.max(2 * root.r / w, 2 * root.r / h)) / 2;
+      d3_layout_hierarchyVisitAfter(root, function(d) { d.r += dr; });
+      d3_layout_hierarchyVisitAfter(root, d3_layout_packSiblings);
+      d3_layout_hierarchyVisitAfter(root, function(d) { d.r -= dr; });
+    }
+
+    // Translate and scale the layout to fit the requested size.
+    d3_layout_packTransform(root, w / 2, h / 2, radius ? 1 : 1 / Math.max(2 * root.r / w, 2 * root.r / h));
 
     return nodes;
   }
 
-  pack.size = function(x) {
+  pack.size = function(_) {
     if (!arguments.length) return size;
-    size = x;
+    size = _;
+    return pack;
+  };
+
+  pack.radius = function(_) {
+    if (!arguments.length) return radius;
+    radius = _ == null || typeof _ === "function" ? _ : +_;
+    return pack;
+  };
+
+  pack.padding = function(_) {
+    if (!arguments.length) return padding;
+    padding = +_;
     return pack;
   };
 
@@ -50,16 +75,18 @@ function d3_layout_packIntersects(a, b) {
   var dx = b.x - a.x,
       dy = b.y - a.y,
       dr = a.r + b.r;
-  return dr * dr - dx * dx - dy * dy > .001; // within epsilon
+  return .999 * dr * dr > dx * dx + dy * dy; // relative error within epsilon
 }
 
-function d3_layout_packCircle(nodes) {
-  var xMin = Infinity,
+function d3_layout_packSiblings(node) {
+  if (!(nodes = node.children) || !(n = nodes.length)) return;
+
+  var nodes,
+      xMin = Infinity,
       xMax = -Infinity,
       yMin = Infinity,
       yMax = -Infinity,
-      n = nodes.length,
-      a, b, c, j, k;
+      a, b, c, i, j, k, n;
 
   function bound(node) {
     xMin = Math.min(node.x - node.r, xMin);
@@ -95,7 +122,7 @@ function d3_layout_packCircle(nodes) {
       b = a._pack_next;
 
       // Now iterate through the rest.
-      for (var i = 3; i < n; i++) {
+      for (i = 3; i < n; i++) {
         d3_layout_packPlace(a, b, c = nodes[i]);
 
         // Search for the closest intersection.
@@ -128,21 +155,20 @@ function d3_layout_packCircle(nodes) {
     }
   }
 
-  // Re-center the circles and return the encompassing radius.
+  // Re-center the circles and compute the encompassing radius.
   var cx = (xMin + xMax) / 2,
       cy = (yMin + yMax) / 2,
       cr = 0;
-  for (var i = 0; i < n; i++) {
-    var node = nodes[i];
-    node.x -= cx;
-    node.y -= cy;
-    cr = Math.max(cr, node.r + Math.sqrt(node.x * node.x + node.y * node.y));
+  for (i = 0; i < n; i++) {
+    c = nodes[i];
+    c.x -= cx;
+    c.y -= cy;
+    cr = Math.max(cr, c.r + Math.sqrt(c.x * c.x + c.y * c.y));
   }
+  node.r = cr;
 
   // Remove node links.
   nodes.forEach(d3_layout_packUnlink);
-
-  return cr;
 }
 
 function d3_layout_packLink(node) {
@@ -154,20 +180,10 @@ function d3_layout_packUnlink(node) {
   delete node._pack_prev;
 }
 
-function d3_layout_packTree(node) {
-  var children = node.children;
-  if (children && children.length) {
-    children.forEach(d3_layout_packTree);
-    node.r = d3_layout_packCircle(children);
-  } else {
-    node.r = Math.sqrt(node.value);
-  }
-}
-
 function d3_layout_packTransform(node, x, y, k) {
   var children = node.children;
-  node.x = (x += k * node.x);
-  node.y = (y += k * node.y);
+  node.x = x += k * node.x;
+  node.y = y += k * node.y;
   node.r *= k;
   if (children) {
     var i = -1, n = children.length;
@@ -181,11 +197,11 @@ function d3_layout_packPlace(a, b, c) {
       dy = b.y - a.y;
   if (db && (dx || dy)) {
     var da = b.r + c.r,
-        dc = Math.sqrt(dx * dx + dy * dy),
-        cos = Math.max(-1, Math.min(1, (db * db + dc * dc - da * da) / (2 * db * dc))),
-        theta = Math.acos(cos),
-        x = cos * (db /= dc),
-        y = Math.sin(theta) * db;
+        dc = dx * dx + dy * dy;
+    da *= da;
+    db *= db;
+    var x = .5 + (db - da) / (2 * dc),
+        y = Math.sqrt(Math.max(0, 2 * da * (db + dc) - (db -= dc) * db - da * da)) / (2 * dc);
     c.x = a.x + x * dx + y * dy;
     c.y = a.y + x * dy - y * dx;
   } else {

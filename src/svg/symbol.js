@@ -1,3 +1,8 @@
+import "../arrays/map";
+import "../core/functor";
+import "../math/trigonometry";
+import "svg";
+
 d3.svg.symbol = function() {
   var type = d3_svg_symbolType,
       size = d3_svg_symbolSize;
@@ -10,14 +15,14 @@ d3.svg.symbol = function() {
 
   symbol.type = function(x) {
     if (!arguments.length) return type;
-    type = d3.functor(x);
+    type = d3_functor(x);
     return symbol;
   };
 
   // size of symbol in square pixels
   symbol.size = function(x) {
     if (!arguments.length) return size;
-    size = d3.functor(x);
+    size = d3_functor(x);
     return symbol;
   };
 
@@ -33,7 +38,7 @@ function d3_svg_symbolType() {
 }
 
 function d3_svg_symbolCircle(size) {
-  var r = Math.sqrt(size / Math.PI);
+  var r = Math.sqrt(size / π);
   return "M0," + r
       + "A" + r + "," + r + " 0 1,1 0," + (-r)
       + "A" + r + "," + r + " 0 1,1 0," + r
@@ -97,4 +102,4 @@ var d3_svg_symbols = d3.map({
 d3.svg.symbolTypes = d3_svg_symbols.keys();
 
 var d3_svg_symbolSqrt3 = Math.sqrt(3),
-    d3_svg_symbolTan30 = Math.tan(30 * Math.PI / 180);
+    d3_svg_symbolTan30 = Math.tan(30 * d3_radians);
